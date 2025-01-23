@@ -1,0 +1,2027 @@
+---
+title: "Data Mining Final Project"
+author: "by Edward Prescott-Decie"
+date: "(December 02, 2024)"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+  html_document:
+    theme: readable
+    highlight: espresso
+    number_sections: no
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+---
+
+# Introduction
+
+This project is concerned with a dataset concerning forest fires in regions of Canada. The aim of the project is to develop machine learning models to predict the occurrence of these forest fires based on a variety of environmental features such as temperature, humidity, wind speed etc. A preprocessing and an exploratory analysis of the dataset are conducted to obtain a better idea of the nature of the data. Additionally, feature selection methods are explored in order to gain insight on the significance of predictors in the set. Next, different predictive techniques including, logistic regression, linear discriminant analysis (LDA), quadratic discriminant analysis (QDA), k-nearest neighbors (KNN), decision trees, random forests, boosting methods, and support vector machines (SVM) are used to explore the dataset and predict occurrences. Methods of optimizing these models are also explored. Cross validation and hyperparameter tuning are used to ensure optimal predictive efficacy. Many of the models in this project aid in the inference of the data and the environment. It is important to not only provide strong predictions but also solid understandings of the data interactions that lead to these predictions. For example, if scientists learn that one predictor is much more significant than others, they can then afford to narrow their focus towards it. The goal of the project is therefore, to not only explore how different models perform, tune their hyperparameters, and assess their effectiveness in predicting forest fires, but also gain inference and understanding of the nature and interactions of elements within the data.
+
+# Libraries
+
+```{r warning=FALSE, results='hide', message=FALSE, error=FALSE}
+library(tidyverse)
+library(cowplot)
+library(car)
+library(caret)
+library(leaps)
+library(factoextra)
+library(FactoMineR)
+library(pROC)
+library(MASS)
+library(class)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(gbm)
+library(adabag)
+library(e1071)
+```
+
+-   Tidyverse is mainly used to facilitate data handling and manipulation. It is also important for plotting data as it contains a sublibrary (ggplot2) which offers neater and more visually appealing outputs.
+
+-   Cowplot is used to create subplots from plots generated with ggplot2.
+
+-   Car is used for VIF calculation.
+
+-   Caret is used for model training as well as generating more advanced confusion matrices.
+
+-   Leaps is used for subset and feature selection.
+
+-   Factoextra provides all the relevant functions to visualize the outputs of the principal component analysis. These functions include scree plot, biplot and Cos2.
+
+-   PROC is used to generate ROC curves and calculate AUC. Aditionally, this package is useful in creating multiple ROC curves.
+
+-   MASS is used for lda and qda modelling.
+
+-   Class is used for KNN modelling.
+
+-   Rpart is used in the making of decision trees and rpart.plot for the plotting of these trees
+
+-   RandomForest will be used to implement functions related to tree classifiers such as bagging and boosting.
+
+-   Gbm is used for bagging and adabag for boosting.
+
+-   e1071 is used for functions related to support vector machines (SVM)
+
+# Data Preprocessing
+
+## Loading the Dataset
+
+To get started working with the data, the dataset must first be loaded:
+
+```{r}
+ForestFires=read.csv("forest_fires_dataset.csv",header=T,na.strings="?")
+```
+
+## Initial Viewing and Preprocessing
+
+The original dimensions of the data are as follows:
+
+```{r}
+dim(ForestFires)
+```
+
+However, there is a split in the dataset between the data taken from Cordillera and from Hudson Bay. In order to differentiate between this data and later combine the two together, separate dataframes must be created. By observing the data on the csv file, the indices to make the split are chosen.
+
+```{r}
+fires_cordillera = ForestFires[1:122,]
+fires_newhudson = ForestFires[126:247,]
+dim(fires_cordillera)
+dim(fires_newhudson)
+```
+
+The two new dataframes are of equal dimension. Additionally, they begin and end on the same date simplifying a comparison-based analysis.
+
+```{r results="hold"}
+head(fires_cordillera)
+head(fires_newhudson)
+```
+
+The day, month and year columns are then combined into a single column in order to more easily work with this entry. Working with any of the three alone, there would be many repeat values. Therefore, in order to treat the data as a time series, they are combined it into a single entry.
+
+```{r}
+fires_newhudson$Date = paste(fires_newhudson$year,fires_newhudson$month,fires_newhudson$day,sep="-")
+fires_cordillera$Date = paste(fires_cordillera$year,fires_cordillera$month,fires_cordillera$day,sep="-")
+```
+
+The day, month and year columns are then removed.
+
+```{r}
+fires_newhudson = fires_newhudson[4:15]
+fires_cordillera = fires_cordillera[4:15]
+```
+
+Additionally, it would be useful to insert a column into each dataframe that contains information about the region which the entry came from. This way, when combining the two dataframes, there will still be a relevant differentiation. The two new columns at the end of the dataframe can now be viewed:
+
+```{r}
+head(fires_newhudson)
+```
+
+A combined dataframe housing both sets of data is then created. We note that the dimension is now 244 rows rather than 247. We have simply gotten rid of the blank space between both sets.
+
+```{r}
+combined_fires = rbind(fires_cordillera,fires_newhudson)
+dim(combined_fires)
+```
+
+## Class Balance/Imbalance + Missing Data
+
+Another useful piece of information would be to gather data about the number of entries belonging to each class. A bar graph can be plotted to get an idea of the balance between the two sets. A relatively equal number of entries in both classes is optimal as an imbalance could skew or provide suboptimal results.
+
+```{r}
+ggplot(combined_fires, aes(x=Classes,fill=Classes)) + 
+  geom_bar()
+```
+
+However, when making this bar plot, two classes are expected. However, the bar plot shows 9. This can most likely be attributed to a formatting problem and therefore the white space around the entries should be trimmed. The plot is then attempted again and this seems to correct this error.
+
+```{r}
+combined_fires$Classes = trimws(combined_fires$Classes)
+ggplot(combined_fires, aes(x=Classes,fill=Classes)) + 
+  geom_bar() + 
+  labs(title = "Number of Entries per Class", y="Entries")
+```
+
+There seems to be a row that has a null entry in the Classes column. Upon further inspection, this is most likely due to an error in data entry. In the 169th row of the original dataset, DC is equal to 14.6 9. All the entries to the right then seem to be shifted to the left as FWI is equal to "fire". So the mistake must be fixed before proceeding. The most straightforward way of doing this is by fixing the error in the original csv file itself and repeating the procedure.
+
+```{r}
+#loading the new dataset
+ForestFires=read.csv("forest_fires_dataset_fixed_entry.csv",header=T,na.strings="?")
+
+#seperating by region
+fires_cordillera = ForestFires[1:122,]
+fires_newhudson = ForestFires[126:247,]
+
+#combining day, month and year and removing them
+fires_newhudson$Date = paste(fires_newhudson$year,fires_newhudson$month,fires_newhudson$day,sep="-")
+fires_cordillera$Date = paste(fires_cordillera$year,fires_cordillera$month,fires_cordillera$day,sep="-")
+fires_newhudson = fires_newhudson[4:15]
+fires_cordillera = fires_cordillera[4:15]
+
+#giving each dataframe a Region column
+fires_newhudson$Region = paste("New Hudson")
+fires_cordillera$Region = paste("Cordillera")
+
+#trimming the Classes columns
+fires_cordillera$Classes = trimws(fires_cordillera$Classes)
+fires_newhudson$Classes = trimws(fires_newhudson$Classes)
+
+#combing the two dataframes
+combined_fires = rbind(fires_cordillera,fires_newhudson)
+
+#entries in the Classes column
+combined = ggplot(combined_fires, aes(x=Classes,fill=Classes)) + 
+  geom_bar() + 
+  labs(title = "Combined Entries", y="Entries")
+separate = ggplot(combined_fires, aes(x=Classes,fill=Classes)) + 
+  geom_bar() + 
+  facet_wrap(~Region) + 
+  labs(title = "Separated Entries by Region", y="Entries")
+plot_grid(combined,separate)
+```
+
+There are now two classes as is meant to be. Additionally, the balance isn't extremely uneven and so there should be little worry in that respect. The balance between classes is most uneven in New Hudson with almost double the entries being part of the "fire" class. This may prove to be significant later on and this point can be returned to in the future if this proves so. To put all this numerically:
+
+```{r results="hold"}
+fire_C = nrow(fires_cordillera[fires_cordillera$Classes == "fire",])
+notfire_C = nrow(fires_cordillera[fires_cordillera$Classes == "not fire",])
+fire_N = nrow(fires_newhudson[fires_newhudson$Classes == "fire",])
+notfire_N = nrow(fires_newhudson[fires_newhudson$Classes == "not fire",])
+sprintf("The number of 'fire' entries in Cordillera's data is %s",fire_C)
+sprintf("The number of 'not fire' entries in Cordillera's data is %s",notfire_C)
+sprintf("The number of 'fire' entries in New Hudson's data is %s",fire_N)
+sprintf("The number of 'not fire' entries in New Hudson's data is %s",notfire_N)
+sprintf("The number of 'fire' entries in both is %d",fire_C+fire_N)
+sprintf("The number of 'not fire' entries in both is %d",notfire_C+notfire_N)
+```
+
+## Encoding
+
+It must be brought to attention that the quantitative data entries are currently characterized as characters. It would be best to ensure this data is converted to numeric before proceeding. Additionally, the Date entries are converted to the Date type.
+
+There are is now a qualitative predictor added to the dataset being the Region column. This predictor is converted to the factor type in order to be handled accordingly. The same is done for the Classes column in order for it to be handled properly by the models later on.
+
+```{r}
+#converting the entries of the combined dataframe to their relevant type
+combined_fires = cbind(mutate_all(combined_fires[0:10], function(x) as.numeric(as.character(x))),as.factor(combined_fires$Classes), as.Date(combined_fires$Date),as.factor(combined_fires$Region))
+
+#renaming the Date, Region and Classes Column
+names(combined_fires)[names(combined_fires) == "as.Date(combined_fires$Date)"] = "Date"
+names(combined_fires)[names(combined_fires) == "as.factor(combined_fires$Classes)"] = "Classes"
+names(combined_fires)[names(combined_fires) == "as.factor(combined_fires$Region)"] = "Region"
+```
+
+## Outliers
+
+The dataset is riddled with outliers. We can generate a summary of the Rain predictor to get a better look at this.
+
+```{r}
+summary(combined_fires$Rain)
+```
+
+We see in the Rain column, the maximal value is 16.8 whereas the mean of the set lies around 0.76. This implies that the maximum value is likely an outlier for this predictor. This can be better seen in the following plot.
+
+```{r}
+ggplot(data=combined_fires, aes(x=Date, y=Rain)) + 
+  geom_point(color="red") +
+  labs(title= "Rain Level per Day")
+```
+
+A box plot can be generated to get a better visualization of these outliers.
+
+```{r}
+ggplot(data = combined_fires, mapping=aes(x=Classes, y=Rain)) +
+  geom_boxplot() +
+  labs(title= "Box and Whiskers Plot for Rain")
+```
+
+To show that this is not only the case for the Rain predictor, we can generate another box plot for DMC.
+
+```{r}
+ggplot(data = combined_fires, mapping=aes(x=Classes, y=DMC)) +
+  geom_boxplot() +
+  labs(title = "Box and Whiskers Plot for DMC")
+```
+
+There are quite a few outliers scattered throughout the dataset. However, it is unclear as to whether the presence of these outliers is even an issue. For example, it seems logical that on a day with high levels of rain, there should not be any forest fires. In fact, this is immediately visible from the generated box plot. We see that in the column designated for "fire entries, rain level is generally much lower. For this reason throughout the rest of this work, outliers will be maintained.
+
+## Normalization and Standardization
+
+Obviously, due to the large presence of outliers in our data, normalization is likely going to be ineffective. However, we still need to consider standardization. In order to see if this technique would be viable over our dataset, we must determine if our data is relatively normally distributed. We can begin by simply generating a density plot for one of the predictors.
+
+```{r}
+ggplot(data = combined_fires, aes(x = Temperature)) + 
+  geom_density() + 
+  labs(title = "Density Plot of Temperature")
+```
+
+Just from a quick visual analysis, the data certainly looks bell-shaped. However, a slightly more accurate analysis is required. In order to do this, we will generate quantile-quantile (Q-Q) plots for each numerical predictor.
+
+A Q-Q plot, is a scatterplot created by plotting two sets of quantiles or percentiles against each other. If we want to show that the data is normally distributed we would plot quantiles gathered from our data against theoretical normally distributed quantiles. If the data is normally distributed, the quantiles will be comparable and will therefore fit a straight line.
+
+We can begin by plotting the Q-Q plot for Temperature.
+
+```{r}
+ggplot(data = combined_fires, aes(sample = Temperature)) +
+  stat_qq() +
+  stat_qq_line(col = "blue") +
+  labs(title = "Temperature Q-Q Plot")
+```
+
+We observe that the points quite closely fit a straight line. It is therefore safe to assume that Temperature is normally distributed. However, we must also check the other predictors.
+
+```{r}
+Q2 = ggplot(data = combined_fires, aes(sample = RH)) +
+  stat_qq() +
+  stat_qq_line(col = "blue") +
+  labs(title = "RH Q-Q Plot")
+Q3 = ggplot(data = combined_fires, aes(sample = Ws)) +
+  stat_qq() +
+  stat_qq_line(col = "blue") +
+  labs(title = "Ws Q-Q Plot")
+Q4 = ggplot(data = combined_fires, aes(sample = Rain)) +
+  stat_qq() +
+  stat_qq_line(col = "blue") +
+  labs(title = "Rain Q-Q Plot")
+Q5 = ggplot(data = combined_fires, aes(sample = FFMC)) +
+  stat_qq() +
+  stat_qq_line(col = "blue") +
+  labs(title = "FFMC Q-Q Plot")
+Q6 = ggplot(data = combined_fires, aes(sample = DMC)) +
+  stat_qq() +
+  stat_qq_line(col = "blue") +
+  labs(title = "DMC Q-Q Plot")
+Q7 = ggplot(data = combined_fires, aes(sample = DC)) +
+  stat_qq() +
+  stat_qq_line(col = "blue") +
+  labs(title = "DC Q-Q Plot")
+Q8 = ggplot(data = combined_fires, aes(sample = ISI)) +
+  stat_qq() +
+  stat_qq_line(col = "blue") +
+  labs(title = "ISI Q-Q Plot")
+Q9 = ggplot(data = combined_fires, aes(sample = BUI)) +
+  stat_qq() +
+  stat_qq_line(col = "blue") +
+  labs(title = "BUI Q-Q Plot")
+Q10 = ggplot(data = combined_fires, aes(sample = FWI)) +
+  stat_qq() +
+  stat_qq_line(col = "blue") +
+  labs(title = "FWI Q-Q Plot")
+
+plot_grid(Q2,Q3,Q4,Q5,Q6,Q7,Q8,Q9,Q10)
+```
+
+There are a couple predictors that seem to be normally distributed as well. RH and Ws both closely fit a straight line. Additionally, other variables lime ISI and BUI aren't necessarily very far off either.
+
+It may not be the case that all of the data present is normally distributed, but it seems that it may be close enough. Therefore, the dataset will be standardized in order to at least improve the performance of normally distributed predictors. The other predictors will not be detrimentally affected by this choice anyways.
+
+```{r}
+#making a copy
+uns_combined_fires = combined_fires
+
+combined_fires = cbind(scale(combined_fires[1:10]),combined_fires[11:13])
+```
+
+# Exploratory Data Analysis
+
+It is first desirable to get a general idea of the data that we are working with. A summary of the data containing important information can be generated. An example of why this can be important is by taking a look at Rain. The median of this predictor is 0 and the mean is quite low as well. This indicates that the entries in this column are more heavily weighted towards zero. Thinking about this logically, it makes sense for there to be little rain during the months in which this data was gathered (mainly Summer). However, on the flip side we expect that the presence of rain should indicate no fire. This makes Rain a point of question and interest. it becomes a question of whether the predictor is insignificant due to the time period chosen or whether it will play a larger role than expected.
+
+```{r}
+summary(combined_fires)
+```
+
+## Pair-wise Analysis
+
+One preliminary way of looking at the relationship between variables is to set them against each other in a scatter plot. As an example, we can take Temperature and Date.
+
+```{r}
+ggplot(data = combined_fires, aes(x = Date, y = Temperature)) + geom_point(mapping = aes(color=Region, shape = Region)) + labs(title = "Temperature per Day",subtitle = "in Cordillera and New Hudson", x="Day", color="Region", shape = "Region" ) + geom_smooth(aes(color=Region))
+```
+
+The above showcases the fluctuations in temperature over the days provided in the dataset. Smooth fits are used to show the general trend. We can immediately identify a trend which makes sense here being that maximum temperature increases up to August and starts decreasing afterwards. This trend is seasonal and logical. Additionally, applying rationality to this pair of predictors, we might expect more forest fires to occur during the dates where temperature is warmer. This can be studied using the following plot.
+
+```{r}
+ggplot(data = combined_fires, aes(x = Date, y = Temperature)) + geom_point(mapping = aes(color=Classes, shape = Region)) + labs(title = "Temperature per Day",subtitle = "in Cordillera and New Hudson", x="Day", color="Class", shape = "Region" )
+```
+
+We can determine visually from the plot that most points that pertain to the "fire" class lie above points pertaining to the "not fire" class. This falls in line with our prediction above. It is more likely for a forest fire to occur when temperature is warmer rather than cooler. Additionally, we note that there are hardly any forest fires on days where temperature was below 27 degrees. While these data points may have been considered outliers prior to this knowledge, it must now be reconsidered that these points contain valuable information in being able to predict a forest fire taking place.
+
+This interpretation can even be quantized further by showcasing the data in a density plot and differentiating by class.
+
+```{r}
+ggplot(data = combined_fires, aes(x = Temperature)) + geom_density(mapping = aes(color=Classes)) + labs(title = "Density Plot of Temperature",subtitle = "differentiating by Class", x="Temperature", color="Class")
+```
+
+We note that there is a clearly a greater density of "fire" entries at higher temperatures and a greater density of "not fire" entries at lower temperatures. There is a large intersection between the two curves meaning that the separation is not completely clear, but the trend is certainly visible. The density plots of other predictors are shown.
+
+```{r}
+G1 = ggplot(data = combined_fires, aes(x = Ws)) + 
+  geom_density(mapping = aes(color=Classes)) + 
+  labs(title = "Density Plot of Wind Speed",subtitle = "differentiating by Class", x="Wind Speed", color="Class")
+G2 = ggplot(data = combined_fires, aes(x = ISI)) + 
+  geom_density(mapping = aes(color=Classes)) + 
+  labs(title = "Density Plot of ISI",subtitle = "differentiating by Class", x="ISI", color="Class")
+plot_grid(G1,G2)
+```
+
+In the case of wind speed, "fire" and "not fire" values seem to occur in very similar ranges. This may indicate that this will not be a great predictor later on for the models. It could also not be the case as the relationship may be more intricate.
+
+On the other hand, when looking at ISI, the two classes become almost entirely separate. A higher ISI seems to be linked with forest fires. This could indicate ISI being a strong predictor especially for models estimating Baye's decision boundary.
+
+## Scatter Plot Matrix and Correlation
+
+Another way to get a preliminary idea of the way that predictors interact with each other is by generating a scatterplot matrix. In doing this, it can be made immediately obvious which variables are strongly correlated and which are not. However, we must note that this only accounts for correlation between two variables and not more. This will be accounted for later.
+
+```{r}
+pairs(combined_fires)
+```
+
+There is much going on and it would be almost pointless trying to interpret every single plot. There are quite a few obvious positive correlations such as that between DMC or BUI or that between ISI and FWI. This is notably the case mostly with the FWI components. Seeing as they are built upon each other (for example, BUI is built on DMC and DC. FWI is dependent on all 5 components). This information may prove useful in the future when discerning trends or interpreting results.
+
+To get a better picture of this, a matrix with the correlation of each pair is generated.
+
+```{r}
+round(cor(combined_fires[1:10]),3)
+```
+
+We note from this that matrix that BUI has a couple strong correlations with some other predictors. It may prove wise therefore to later on look at the Variance Inflation Factor (VIF) of this predictor to get an idea of not only its pair-wise correlation but rather it's general dataset-wide correlation. The reason that we are interested in this is because strong correlation can often be dangerous and can skew results. This occurs in the form of an increase in the correlated predictor's standard error and therefore an increase in its p-value. A strong correlation is all it takes for the hypothesis test to lose its power in being able to predict the significance of a predictor. This idea will be important when analyzing the results of the logistic regression output.
+
+# Feature Selection
+
+## Best Subset Selection
+
+Typically, subset selection is used for regression models. However, there are still some useful pieces of information we can gather from it.
+
+Seeing as the dataset being used is not extremely massive we can afford to conduct a best subset selection algorithm. We are initially interested in calculating the exhaustive selection for all of the predictors as well as the calculated outputs such as:
+
+-   Bayesian Information Criterion (BIC): A measure of the trade-off between model fit and the complexity of the model. A lower BIC is favorable.
+
+-   Residual Sum of Squares (RSS): The sum of the squares of residuals. It depends on the problem at hand, but a generally lower RSS is favorable as the model is fit better. However, it must be noted that RSS is non-increasing and will tend to decrease no matter what.
+
+-   Adjusted R$^2$: A metric that describes the percentage of variance in the target field explainable by the inputs. This metric will also tend to plateau as more predictors are added.
+
+-   Mallow's C$_p$: Another method that assesses the fit of a model. Similar to BIC, a lower C$_p$ indicates a more precise model.
+
+The exhaustive selection algorithm must first be run on the data. we set nvmax = 12 in order to tell the model to calculate the best subset for every size subset.
+
+```{r}
+regfit.best = regsubsets(Classes~.,data = combined_fires, nvmax = 12)
+reg.summary = summary(regfit.best)
+reg.summary
+```
+
+Now the relevant metrics can be picked out and plotted against the number of elements in each step. This will give an idea of the optimal subset to choose.
+
+```{r}
+#creating a dataframe housing relevant metrics
+metrics = data.frame(adjr2 = reg.summary$adjr2,cp = reg.summary$cp,bic = reg.summary$bic,rss = reg.summary$rss)
+metrics$n = 1:nrow(metrics)
+
+#plot for RSS
+RSS = ggplot(data = metrics, aes(x = n, y = rss, color = rss)) + geom_line() +geom_point() + labs(x = "number of predictors", y = "RSS", color = "RSS")
+
+#plot for Adjusted R Squared
+ADJR2 = ggplot(data = metrics, aes(x = n, y = adjr2, color = adjr2)) + geom_line() +geom_point() + labs(x = "number of predictors", y = "ADJR2", color="ADJR2")
+
+#plot for BIC
+BIC = ggplot(data = metrics, aes(x = n, y = bic, color = bic)) + geom_line() +geom_point() + labs(x = "number of predictors", y = "BIC", color="BIC")
+
+#plot for Cp
+CP = ggplot(data = metrics, aes(x = n, y = cp, color = cp)) + geom_line() +geom_point() + labs(x = "number of predictors", y="CP", color="CP")
+
+plot_grid(RSS,ADJR2,BIC,CP)
+```
+
+Minimum BIC occurs at a subset of 4 elements whereas minimum C$_p$ occurs at a subset of size 6. This indicates that a subset containing less than 4 or greater than 6 elements may prove insufficient. BIC will be chosen as the stronger indicator and so the best subset containing 4 elements will be chosen as this offers a low C$_p$, BIC, RSS, and a high Adjusted R$^2$.
+
+This leaves us with a subset consisting of RH, FFMC, DMC and FWI.
+
+Before leaving this section, it is worth noting that in the case of a subset of size 3, ISI is chosen as one of the predictors. As soon as the size increases, it is removed. It will be shown later that ISI is a strong predictor by itself and as such it is interesting that it appears and disappears like this.
+
+## Backward and Forward Subset Selection
+
+When running the backward subset selection,
+
+```{r}
+regfit.bwd = regsubsets(Classes~.,data = combined_fires, nvmax = 12, method="backward")
+reg.summary = summary(regfit.bwd)
+reg.summary
+```
+
+and the forward subset selection,
+
+```{r}
+regfit.fwd = regsubsets(Classes~.,data = combined_fires, nvmax = 12, method="forward")
+reg.summary = summary(regfit.fwd)
+reg.summary
+```
+
+We note that the subset matrices are equivalent. Therefore, studying either of these methods is sufficient enough to determine an optimal subset.
+
+```{r}
+#creating a dataframe housing relevant metrics
+metrics = data.frame(adjr2 = reg.summary$adjr2,cp = reg.summary$cp,bic = reg.summary$bic,rss = reg.summary$rss)
+metrics$n = 1:nrow(metrics)
+
+#plot for RSS
+RSS = ggplot(data = metrics, aes(x = n, y = rss, color = rss)) + geom_line() +geom_point() + labs(x = "number of predictors", y = "RSS", color = "RSS")
+
+#plot for Adjusted R Square
+ADJR2 = ggplot(data = metrics, aes(x = n, y = adjr2, color = adjr2)) + geom_line() +geom_point() + labs(x = "number of predictors", y = "ADJR2", color="ADJR2")
+
+#plot for BIC
+BIC = ggplot(data = metrics, aes(x = n, y = bic, color = bic)) + geom_line() +geom_point() + labs(x = "number of predictors", y = "BIC", color="BIC")
+
+#plot for Cp
+CP = ggplot(data = metrics, aes(x = n, y = cp, color = cp)) + geom_line() +geom_point() + labs(x = "number of predictors", y="CP", color="CP")
+
+plot_grid(RSS,ADJR2,BIC,CP)
+```
+
+We note that the shape of our curves differ slightly from the best subset selection case. However, the main trends remain consistent. The minimum BIC is at 4 and the minimum C$_p$ is 6. We will stick to the decision of prioritizing BIC and choose 4 as our optimal subset size.
+
+This leaves us with the same subset as in the best subset selection case and therefore we can merge the two.
+
+## Principal Component Analysis (PCA)
+
+Another effective technique to discern important predictors is Principal Component Analysis. This method only works on numerical values and so qualitative predictors must be omitted. This is a potential limitation, but seeing as Region only shows up in the subset later on, we can assume that its omission will not be detrimental.
+
+```{r}
+pca_result = princomp(combined_fires[1:10])
+summary(pca_result)
+
+#showing the results for the first four principal components
+pca_result$loadings[,1:4]
+```
+
+The eigenvalues of each generated component are given along with the proportion of variance explainable by each component. We see that the first principal component explains roughly 57% of the variance. An additional 16% is explained by the second, and 9% by the third. Cumulatively, these three components explain 82% of the variance in the data. This means that the first three principal components likely already do a good job of describing the dataset. Add on a fourth principal component and the percentage jumps up to 90. A choice of 3 or 4 principal components will be satisfactory.
+
+A scree plot is just the linear plot of the eigenvalues of the principal components. The scree plot for the generated values is given below.
+
+```{r}
+fviz_eig(pca_result, addlabels = TRUE)
+```
+
+The idea that 3 or 4 dimensions is sufficient in describing variance in the dataset is reiterated by the scree plot. To look at the predictors more closely, a biplot is generated. This type of plot is useful in visualizing the similarities and dissimilarities between variables. It showcases the impact of each on the principal components.
+
+```{r}
+fviz_pca_var(pca_result, col.var = "black")
+```
+
+Through this plot, much information is gathered. Firstly, the farther a variable is from the origin, the more power it holds within principal components. This means that Rain may not be as significant as say DMC.
+
+Another piece of information gatherable from this plot is correlation. Arrows closer together are more correlated. We see Rain and RH in the third quadrant of the plot. This implies that the two variables are closely correlated and that they are negatively correlated to the Class. In other words, less rain indicates more fire and the same for humidity. On the other end of the plot, we see a large block of components very closely correlated to one another. This includes FWI and all the components that it is composed of. along with Temperature. These variables are positively correlated to the class and therefore an increase in these values more likely implies an increase in fires.
+
+To get a better understanding of the importance of each variable within the components, a Cos2 graph is plotted. A low value implies that the the given variable is not well represented by the component. A higher value implies the opposite. The Cos2 plot is computed for the first three principal components as these three offer a good explanation for the variance.
+
+```{r}
+fviz_cos2(pca_result, choice = "var", axes = 1:3)
+```
+
+We see that the variables that contributed the most to the first three principal components were BUI, FWI, DMC, DC... These are in face the FWI components. If a subset of size 4 were to be taken then it would compose of the first 4 variables in this plot. Combining the biplot and the Cos2 plot, we obtain the following.
+
+```{r}
+fviz_pca_var(pca_result, col.var = "cos2",
+            gradient.cols = c("red", "yellow", "green"),
+            repel = TRUE)
+```
+
+Not much interpretation is gained from the combination of the two plots. The weight of each variable is reiterated along with the similarity between each.
+
+## Recursive Feature Elimination (RFE)
+
+RFE is similar to backwards subset selection. The entire set of features is taken at first and one of the predictors is dropped. This process repeats recursively until a stopping condition is met or until there are no more predictors. The difference is in the method of ranking features. In this case, Random Forest will be used to do so. The Random Forest method will be discussed later on in greater detail. However, for now, it offers another effective means of determining the most significant predictors in the dataset.
+
+Additionally, Cross Validation will be used to evaluate the model at each step. Essentially, the data will be separated into segments one of which will be omitted from training in order to be used to evaluate. This evaluation process will be repeated a certain number of times and a final accuracy will be reported. Based on this accuracy, we will be able to determine the size of the subset and the elements within that offer the optimal results.
+
+A 5-fold cross validation is chosen with 5 repetitions.
+
+```{r results='hold'}
+#setting the tuning parameters
+control_rfe = rfeControl(functions = rfFuncs, method = "repeatedcv", repeats = 5, number = 5)
+
+#computing the subset
+result_rfe = rfe(x=cbind(combined_fires[1:10],combined_fires[12:13]), y=combined_fires$Classes, sizes = c(1:12), rfeControl = control_rfe)
+result_rfe
+```
+
+Unlike the previous selection methods, this one presents a subset of size 2 as its optimal result. Additionally, this subset contains ISI which was not present in any of the other given subsets. However, it is worth remembering that ISI did show up in best subset selection at size 3 and then disappeared again.
+
+Now that features have been studied in greater depth and subsets have been formed, it is possible to move on and create models for the dataset. There are other methods that could be used here to reduce the dimensionality of the dataset such as LASSO. However, there are already enough subsets to work with so this can be left as an extension to the project.
+
+# Model Development
+
+## Partitioning the Dataset
+
+This section begins with the splitting of the data into a training and a testing set. 70% of values are chosen at random for the training set and the remaining 30% are used for the test set. The reason a 70:30 split is chosen rather than an 80:20 split is because the 70:30 split leaves a little more room for test data entries. In the 80:20 split, there are only 49 test elements to work with, whereas in the 70:30 split, there are 72.
+
+```{r}
+#setting the seed
+set.seed(123)
+
+#creating the partition and splitting the data for standardized set
+trainIndex = createDataPartition(combined_fires$Classes, p=0.7, list=FALSE)
+trainData = combined_fires[trainIndex,]
+testData = combined_fires[-trainIndex,]
+
+#splitting the training data into dependent and independent variables for standardized set
+trainY = trainData[,11]
+trainX = trainData[,-11]
+testY = testData[,11]
+testX = testData[,-11]
+
+#creating the partition and splitting the data for unstandardized set
+uns_trainIndex = createDataPartition(uns_combined_fires$Classes, p=0.7, list=FALSE)
+uns_trainData = uns_combined_fires[uns_trainIndex,]
+uns_testData = uns_combined_fires[-uns_trainIndex,]
+
+#splitting the training data into dependent and independent variables for unstandardized set
+uns_trainY = uns_trainData[,11]
+uns_trainX = uns_trainData[,-11]
+uns_testY = uns_testData[,11]
+uns_testX = uns_testData[,-11]
+```
+
+## Logistic Regression
+
+The first model used to tackle the dataset is a Logistic Regression model.
+
+### Single Variable Logistic Regression
+
+Once we have the training and test set, we begin fitting the model. The model will initially consider Wind Speed as the only independent variable. Wind Speed was analysed in the exploratory analysis and there was hardly any split between the Classes when looking at the density plot. For this reason, it was predicted to not perform well in being able to discern the two Classes.
+
+```{r}
+#setting the seed
+set.seed(123)
+
+#fitting the model
+glm.fits = glm(Classes ~ Ws, data = trainData, family = binomial)
+summary(glm.fits)
+
+#creating the array of probabilities
+glm.probs = predict(glm.fits, testData, type = "response")
+glm.pred = rep("not fire",72)
+glm.pred[glm.probs < .5] = "fire"
+
+#developing the confusion matrix
+confusionMatrix(data=as.factor(glm.pred), reference = testData$Classes)
+```
+
+The first talking point concerns this predictor's p-value. It is well over 0.05 and therefore is likely insignificant with regard to Class. Additionally, when computing the confusion matrix, all false values were predicted to be true. This likely indicates a faulty probability threshold but upon further testing that is not shown in this project, this predictor is basically hopeless by itself. Recall is 1 as all true positives were found. However, precision is only 0.5694. Overall accuracy is about the same indicating that this model is only slightly better than a random guess.
+
+Another predictor of interest is ISI. This predictor shown a good amount of separation between classes upon exploratory analysis. Therefore we predict it should perform quite well. The ROC curve for this model is shown below.
+
+```{r}
+roc_curve = suppressMessages(roc(testData$Classes, glm.probs))
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+```
+
+The AUC is 0.546 which is just above half and again reflects the idea that this predictor is hardly any better than a random guess.
+
+```{r}
+#setting the seed
+set.seed(123)
+
+#fitting the model
+glm.fits = glm(Classes ~ ISI , data = trainData, family = binomial)
+summary(glm.fits)
+
+#creating the array of probabilities
+glm.probs = predict(glm.fits, testData, type = "response")
+glm.pred = rep("not fire",72)
+glm.pred[glm.probs < 0.5] = "fire"
+
+#developing the confusion matrix
+confusionMatrix(data=as.factor(glm.pred), reference = testData$Classes)
+```
+
+It is indeed the case that ISI performs very well over the dataset. With a p-value well under 0.05, the feature is very likely significant. It showcases an accuracy of 0.9861 as well as a Recall of 1 and precision of 0.976. This feature is clearly a very strong predictor in the logistic regression model.
+
+```{r}
+roc_curve = suppressMessages(roc(testData$Classes, glm.probs))
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+```
+
+The AUC for this model is 1. It is probably not exactly equal to 1 but it is likely very close.
+
+### Mulrivariate Logistic Regression
+
+We will now compute the logistic regression with all predictors followed by the best subsets generated in the Feature Selection section.
+
+```{r}
+#setting the seed
+set.seed(123)
+
+#fitting the model
+glm.fits = glm(Classes ~ ., data = trainData, family = binomial)
+summary(glm.fits)
+
+#creating the array of probabilities
+glm.probs = predict(glm.fits, testData, type = "response")
+glm.pred = rep("not fire",72)
+glm.pred[glm.probs < .5] = "fire"
+
+#developing the confusion matrix
+confusionMatrix(data=as.factor(glm.pred), reference = testData$Classes)
+```
+
+We immediately note that the p-values for all the predictors are approximately 1. This is surprising but explainable. As mentioned before the level of correlation between features is quite high. A tool we can use to get a better picture of this is VIF.
+
+```{r}
+vif(glm.fits)
+```
+
+If we consider a high VIF threshold to be 5, we note that all of the predictors are well over it. Therefore, it is no surprise that variance and p-value have skyrocketed.
+
+However, this does not mean that this set of data will necessarily perform badly when predicting the classes. In fact, we note the exact same results as when we took ISI as a lone predictor. Therefore there is no need to further analyse or generate a ROC curve. It is only worth mentioning that because the result where all variables are involved does not change add much, it indicates that involving all variables is only slowing down the process.
+
+#### Best Subset
+
+The logistic regression is now applied to the subset generated from the best subset selection approach.
+
+```{r}
+#setting the seed
+set.seed(123)
+
+#fitting the model
+glm.fits = glm(Classes ~ RH + FFMC + DMC + FWI, data = trainData, family = binomial)
+summary(glm.fits)
+
+#creating the array of probabilities
+glm.probs = predict(glm.fits, testData, type = "response")
+glm.pred = rep("not fire",72)
+glm.pred[glm.probs < .5] = "fire"
+
+#developing the confusion matrix
+confusionMatrix(data=as.factor(glm.pred), reference = testData$Classes)
+```
+
+We once again note very similar results with this model having predicted only one extra false positive. It is worth mentioning that none of the p-values are under 0.05 anymore. The case is not as sever as in the complete model. Additionally, DMC and FWI are not all that far off and may even be considered significant depending on how far one is willing to stretch.
+
+#### PCA Subset
+
+Logistic regression is now run on the subset generated by the PCA approach
+
+```{r}
+#setting the seed
+set.seed(123)
+
+#fitting the model
+glm.fits = glm(Classes ~ BUI + FWI + DMC + DC, data = trainData, family = binomial)
+summary(glm.fits)
+
+#creating the array of probabilities
+glm.probs = predict(glm.fits, testData, type = "response")
+glm.pred = rep("not fire",72)
+glm.pred[glm.probs < .5] = "fire"
+
+#developing the confusion matrix
+confusionMatrix(data=as.factor(glm.pred), reference = testData$Classes)
+```
+
+Once again we see extremely similar results.
+
+#### RFE Subset
+
+The logistic regression is now run the subset generated by the RFE method.
+
+```{r}
+#setting the seed
+set.seed(123)
+
+#fitting the model
+glm.fits = glm(Classes ~ ISI + FFMC, data = trainData, family = binomial)
+summary(glm.fits)
+
+#creating the array of probabilities
+glm.probs = predict(glm.fits, testData, type = "response")
+glm.pred = rep("not fire",72)
+glm.pred[glm.probs < .5] = "fire"
+
+#developing the confusion matrix
+confusionMatrix(data=as.factor(glm.pred), reference = testData$Classes)
+```
+
+Very interestingly, this subset has produced a perfect prediction. There is perfect accuracy, precision, recall, sensitivity and specificity. As such, the AUC of this model will certainly be 1 as well.
+
+To get a better idea of what is going on, we can plot the decision boundary produced by this fit. We begin by defining a range with the minimum and maximum values of ISI and FFMC. We then create sequences of equally spaced values between the minimum and maximum values of ISI and FFMC and put them into a grid. We are defining this set of points in order to add contour lines that represent our decision boundary. These lines represent decision boundaries where the predicted probability is constant.
+
+```{r}
+#create grid for predictions
+x_range <- range(uns_trainData$ISI)
+y_range <- range(uns_trainData$FFMC)
+x_vals <- seq(x_range[1], x_range[2], length.out = 100)
+y_vals <- seq(y_range[1], y_range[2], length.out = 100)
+grid <- expand.grid(ISI = x_vals, FFMC = y_vals)
+
+# Add prediction to the grid
+grid$predictions = predict(glm.fits, grid, type = "response")
+
+# Plot decision boundaries
+ggplot(uns_testData, aes(x = ISI, y = FFMC, color = Classes)) +
+  geom_point() +
+  geom_contour(data = grid, aes(z = predictions), color = "black") +
+  labs(title = "Decision Boundaries with Logistic Regression",
+       x = "ISI", y = "FFMC", color = "Class") +
+  theme_minimal()
+```
+
+We note that there is a very clear linear separation between the two classes. This explains why logistic regression produced very optimal results.
+
+### Multiple ROC Curve
+
+For the remainder of this project, after delving into each model and its performance, a multiple ROC curve will be generated. This plot will showcase five ROC curves.
+
+-   ROC1: Temperature alone
+
+-   ROC2: All predictors
+
+-   ROC3: Best Subset
+
+-   ROC4: PCA Subset
+
+-   ROC5: RFE Subset
+
+These five choices will stay consistent throughout in order to be able to compare performance by the end of the project.
+
+```{r}
+#set the seed
+set.seed(123)
+
+#fit the models
+glm.fit1 = suppressWarnings(glm(Classes ~ Temperature, data = trainData, family = binomial))
+glm.fit2 = suppressWarnings(glm(Classes ~ ., data = trainData, family = binomial))
+glm.fit3 = suppressWarnings(glm(Classes ~ FWI + FFMC + DMC + RH, data = trainData, family = binomial))
+glm.fit4 = suppressWarnings(glm(Classes ~ BUI + FFMC + DMC + DC, data = trainData, family = binomial))
+glm.fit5 = suppressWarnings(glm(Classes ~ ISI + FFMC, data = trainData, family = binomial))
+
+#predict the values
+glm.prob1=predict(glm.fit1, testX, type = "response")
+glm.prob2=predict(glm.fit2, testX, type = "response")
+glm.prob3=predict(glm.fit3, testX, type = "response")
+glm.prob4=predict(glm.fit4, testX, type = "response")
+glm.prob5=predict(glm.fit5, testX, type = "response")
+
+#compute ROC curves
+roc1 = suppressMessages(roc(testData$Classes, glm.prob1))
+roc2 = suppressMessages(roc(testData$Classes, glm.prob2))
+roc3 = suppressMessages(roc(testData$Classes, glm.prob3))
+roc4 = suppressMessages(roc(testData$Classes, glm.prob4))
+roc5 = suppressMessages(roc(testData$Classes, glm.prob5))
+
+#compute aucs
+auc1 = auc(roc1)
+auc2 = auc(roc2)
+auc3 = auc(roc3)
+auc4 = auc(roc4)
+auc5 = auc(roc5)
+
+#create a dataframe and store AUC to be used in comparison later
+auc.data = data.frame(
+  Model = "Logistic Regression",
+  Temperature = auc1,
+  Entire_Dataset = auc2,
+  Best_Subset = auc3,
+  PCA = auc4,
+  RFE = auc5
+)
+
+#plot the first ROC curve
+plot.roc(roc1, col = "blue", main = "Logistic Regression ROC Curves")
+
+#add the rest of the curves as lines
+lines.roc(roc2, col = "red", print.auc = TRUE, print.auc.y = 0.4)
+
+lines.roc(roc3, col = "green", print.auc = TRUE, print.auc.y = 0.3)
+
+lines.roc(roc4, col = "orange", print.auc = TRUE, print.auc.y = 0.2)
+
+lines.roc(roc5, col = "yellow", print.auc = TRUE, print.auc.y = 0.1)
+
+legend_labels = c(
+  paste("Temperature (AUC =", round(auc1, 4), ")"),
+  paste("All Features (AUC =", round(auc2, 4), ")"),
+  paste("Best Subset (AUC =", round(auc3, 4), ")"),
+  paste("PCA (AUC =", round(auc4, 4), ")"),
+  paste("RFE (AUC =", round(auc5, 4), ")")
+)
+
+#legend
+legend("bottomright", legend = legend_labels, col = c("blue", "red", "green", "orange", "yellow"), lwd = 0.5, cex = 0.7)
+
+lr_plot = recordPlot()
+```
+
+### Overall Analysis
+
+The logistic regression models performed immensely well on the data provided. This makes a lot of sense as visually, the Classes look very separable. Additionally, many of the variables just about follow a normal distribution. It is no surprise therefore that this type of model performed so well.
+
+The subset that performed the best was the one generated by RFE. However, the difference in performance between this subset and the others is not extremely dire. Aside from the single variable cases where insignificant predictors were chosen, all models here performed with great accuracy.
+
+It is worth mentioning that a better idea of the true performance of these models and the different predictors may be obtained using a larger dataset. A larger dataset would imply a more extensive and thorough representation of the true population and might present intricacies that this model would find hard to deal with. On the flip side, it may just be that the nature of this data is practically linear. This makes sense when considering predictors like FWI where higher indices imply more fires and lower ones imply the opposite.
+
+Overall, based on metrics such as accuracy, precision, recall, AUC, etc. and over the dataset provided, The logistic regression models were highly effective.
+
+## Linear Discriminant Analysis (LDA)
+
+We will now fit an LDA model onto our training set. We will begin by observing Temperature as a feature alone.
+
+```{r}
+lda.fit=lda(Classes~Temperature,data=trainData)
+lda.fit
+```
+
+This summary indicates that 56.4% of entries were chosen to correspond with the "fire" class and 43.6% were chosen to correspond to the "not fire" class. Additionally by observing the means, it becomes clear that a higher temperature is attributed with "fire". Because of standardization, it becomes unclear as to what this mean temperature exactly is. If the exact temperature were of interest then either the standardization must be reversed or the model run over the raw data.
+
+We can plot the linear discriminants to observe the distribution visually.
+
+```{r}
+par(mar = c(4,2,0.5,2))
+plot(lda.fit)
+```
+
+We note that there is a tendency for observations with higher means to be considered "fire" values.
+
+We can next compute the confusion matrix to get a better idea of the performance of this model.
+
+```{r}
+#predict based on test data
+lda.pred=predict(lda.fit, testData)
+
+#develop the confusion matrix
+confusionMatrix(data=as.factor(lda.pred$class), reference = testData$Classes)
+```
+
+We see that this model provides the following metrics:
+
+-   Accuracy: 68%
+
+-   Recall: 71%
+
+-   Precision: 72.5%
+
+-   F1 Score: 0.716
+
+Overall this is not extremely bad but there is a lot of room for improvement.
+
+The ROC curve and corresponding AUC can be shown and computed as follows
+
+```{r}
+roc_curve = suppressMessages(roc(testData$Classes, lda.pred$posterior[,1]))
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+```
+
+An AUC of 0.795 is not terrible. But once again, there is room for improvement.
+
+Previously, in Logistic Regression, Wind Speed was observed to be a lousy predictor when fit by itself. This is because the Classes are not linearly separable in relation to this feature. However, this does not necessarily mean that Wind Speed should not be taken into account as a predictor at all. It is possible that there is a more intricate and less visual relationship at play that a more flexible model might be better at grasping. For this reason, it might be interesting to take a look at this predictor as the complexity of the models used varies. The detailed metrics will not be delved into and only a ROC curve will be plotted with an AUC to be used as a comparison metric.
+
+```{r}
+lda.fit=lda(Classes~Ws,data=trainData)
+lda.pred=predict(lda.fit, testData)
+roc_curve = suppressMessages(roc(testData$Classes, lda.pred$posterior[,1]))
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+```
+
+An AUC of 0.546 is computed. There is no increase in AUC from logistic regression. This is expected as we are still working on the linear scale.
+
+### Multiple ROC Curve
+
+Once again, it would be tiresome and arduous to show detailed metrics for every choice of subset. Therefore, AUC will be used as a general metric to gather an idea of the performance of each model. The following graph shows the ROC curves corresponding to each of the subsets chosen in the logistic regression model section.
+
+```{r}
+#set the seed
+set.seed(123)
+
+#fit the models
+lda.fit1=lda(Classes~Temperature,data=trainData)
+lda.fit2=lda(Classes~.,data=trainData)
+lda.fit3=lda(Classes~RH+FFMC+DMC+FWI,data=trainData)
+lda.fit4=lda(Classes~BUI+FWI+DMC+DC,data=trainData)
+lda.fit5=lda(Classes~ISI+FFMC,data=trainData)
+
+#predict the values
+lda.pred1=predict(lda.fit1, testData)
+lda.pred2=predict(lda.fit2, testData)
+lda.pred3=predict(lda.fit3, testData)
+lda.pred4=predict(lda.fit4, testData)
+lda.pred5=predict(lda.fit5, testData)
+
+#compute ROC curves
+roc1 = suppressMessages(roc(testData$Classes, lda.pred1$posterior[,1]))
+roc2 = suppressMessages(roc(testData$Classes, lda.pred2$posterior[,1]))
+roc3 = suppressMessages(roc(testData$Classes, lda.pred3$posterior[,1]))
+roc4 = suppressMessages(roc(testData$Classes, lda.pred4$posterior[,1]))
+roc5 = suppressMessages(roc(testData$Classes, lda.pred5$posterior[,1]))
+
+#compute aucs
+auc1 = auc(roc1)
+auc2 = auc(roc2)
+auc3 = auc(roc3)
+auc4 = auc(roc4)
+auc5 = auc(roc5)
+
+#create a dataframe and store AUC to be used in comparison later
+auc1.data = data.frame(
+  Model = "LDA",
+  Temperature = auc1,
+  Entire_Dataset = auc2,
+  Best_Subset = auc3,
+  PCA = auc4,
+  RFE = auc5
+)
+
+auc.data = rbind(auc.data,auc1.data)
+
+#plot the first ROC curve
+plot.roc(roc1, col = "blue", main = "LDA ROC Curves")
+
+#add the rest of the curves as lines
+lines.roc(roc2, col = "red", print.auc = TRUE, print.auc.y = 0.4)
+
+lines.roc(roc3, col = "green", print.auc = TRUE, print.auc.y = 0.3)
+
+lines.roc(roc4, col = "orange", print.auc = TRUE, print.auc.y = 0.2)
+
+lines.roc(roc5, col = "yellow", print.auc = TRUE, print.auc.y = 0.1)
+
+legend_labels = c(
+  paste("Temperature (AUC =", round(auc1, 4), ")"),
+  paste("All Features (AUC =", round(auc2, 4), ")"),
+  paste("Best Subset (AUC =", round(auc3, 4), ")"),
+  paste("PCA (AUC =", round(auc4, 4), ")"),
+  paste("RFE (AUC =", round(auc5, 4), ")")
+)
+
+#legend
+legend("bottomright", legend = legend_labels, col = c("blue", "red", "green", "orange", "yellow"), lwd = 0.5, cex = 0.7)
+
+lda_plot = recordPlot()
+```
+
+Once again, the subset generated by RFE produces the best AUC. The other choices trail closely behind.
+
+There is one interesting point to bring up. Most of the subset selection methods provided an AUC of 1. However with the slight increase in complexity of the model used, the AUCs have decreased slightly. This could be an indication of overfitting as the variance and flexibility of the model very slightly increases.
+
+## Quadratic Discriminant Analysis (QDA)
+
+We are now interested in modelling the data with QDA. From previous analysis, we note that the nature of the separation between classes is linear so we are inclined to imagine that this model may perform slightly worse than the previous two. However, this is not necessarily guaranteed. Additionally, it might be interesting to see how a nonlinear model might perform on subsets that were previously thought to be bad. We will begin by analyzing the fit on a subset containing Temperature alone.
+
+```{r}
+#set the seed
+set.seed(123)
+
+#fit the model
+qda.fit=qda(Classes~Temperature,data=trainData)
+qda.fit
+```
+
+Once again, similar to LDA, 56% of points were chosen to correspond with "fire" entries leaving roughly 44% corresponding to the opposite. The trend of higher temperature implying a greater chance of fire is present in this model as well. It is hard to see if QDA has improved anything for this choice of subset
+
+```{r}
+#predict based on test data
+qda.pred=predict(qda.fit, testData)
+
+#develop the confusion matrix
+confusionMatrix(data=as.factor(qda.pred$class), reference = testData$Classes)
+```
+
+We note an identical confusion matrix to that of the one generated in LDA.
+
+```{r}
+roc_curve = suppressMessages(roc(testData$Classes, qda.pred$posterior[,1]))
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+```
+
+This is paired with an identical AUC. Clearly QDA has not improved performance in the case of Temperature. However, it would still be interesting to see if it might improve it for variables that were not so linearly separable. For example, we can try again for Wind Speed.
+
+```{r}
+qda.fit=qda(Classes~Ws,data=trainData)
+qda.pred=predict(qda.fit, testData)
+roc_curve = suppressMessages(roc(testData$Classes, qda.pred$posterior[,1]))
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+```
+
+In fact, there is an increase from 0.546 to 0.619 (13%) in AUC. Wind Speed has by no means become a good predictor, but it is interesting to see the quadratic model work with this variable better than the linear ones. This implies that Wind Speed may exhibit nonlinear patterns. Additionally, it reinstates hope that QDA might unearth intricacies that could improve the fit when considering larger subsets.
+
+### Multiple ROC Curve
+
+```{r}
+#set the seed
+set.seed(123)
+
+#fit the models
+qda.fit1=qda(Classes~Temperature,data=trainData)
+qda.fit2=qda(Classes~.,data=trainData)
+qda.fit3=qda(Classes~RH+FFMC+DMC+FWI,data=trainData)
+qda.fit4=qda(Classes~BUI+FWI+DMC+DC,data=trainData)
+qda.fit5=qda(Classes~ISI+FFMC,data=trainData)
+
+#predict the values
+qda.pred1=predict(qda.fit1, testData)
+qda.pred2=predict(qda.fit2, testData)
+qda.pred3=predict(qda.fit3, testData)
+qda.pred4=predict(qda.fit4, testData)
+qda.pred5=predict(qda.fit5, testData)
+
+#compute ROC curves
+roc1 = suppressMessages(roc(testData$Classes, qda.pred1$posterior[,1]))
+roc2 = suppressMessages(roc(testData$Classes, qda.pred2$posterior[,1]))
+roc3 = suppressMessages(roc(testData$Classes, qda.pred3$posterior[,1]))
+roc4 = suppressMessages(roc(testData$Classes, qda.pred4$posterior[,1]))
+roc5 = suppressMessages(roc(testData$Classes, qda.pred5$posterior[,1]))
+
+#compute aucs
+auc1 = auc(roc1)
+auc2 = auc(roc2)
+auc3 = auc(roc3)
+auc4 = auc(roc4)
+auc5 = auc(roc5)
+
+#create a dataframe and store AUC to be used in comparison later
+auc1.data = data.frame(
+  Model = "QDA",
+  Temperature = auc1,
+  Entire_Dataset = auc2,
+  Best_Subset = auc3,
+  PCA = auc4,
+  RFE = auc5
+)
+
+auc.data = rbind(auc.data,auc1.data)
+
+#plot the first ROC curve
+plot.roc(roc1, col = "blue", main = "QDA ROC Curves")
+
+#add the rest of the curves as lines
+lines.roc(roc2, col = "red", print.auc = TRUE, print.auc.y = 0.4)
+
+lines.roc(roc3, col = "green", print.auc = TRUE, print.auc.y = 0.3)
+
+lines.roc(roc4, col = "orange", print.auc = TRUE, print.auc.y = 0.2)
+
+lines.roc(roc5, col = "yellow", print.auc = TRUE, print.auc.y = 0.1)
+
+legend_labels = c(
+  paste("Temperature (AUC =", round(auc1, 4), ")"),
+  paste("All Features (AUC =", round(auc2, 4), ")"),
+  paste("Best Subset (AUC =", round(auc3, 4), ")"),
+  paste("PCA (AUC =", round(auc4, 4), ")"),
+  paste("RFE (AUC =", round(auc5, 4), ")")
+)
+
+#legend
+legend("bottomright", legend = legend_labels, col = c("blue", "red", "green", "orange", "yellow"), lwd = 0.5, cex = 0.7)
+
+qda_plot = recordPlot()
+```
+
+The AUC for the subset containing all features is improved slightly. This can be attributed to the fact that features exhibiting nonlinear patterns now have slightly better representation. However, it must still be inferred that the true nature of the model is that of a linearly separable one as all of the AUCs are still very high and RFE is still producing an AUC of 1.
+
+## K-Nearest Neighbors (KNN)
+
+We will now examine the performance of KNN models on the dataset. This model assumes no shape when making predictions. It is the most nonlinear of the models shown up till this point. Seeing as the results have already been practically optimal in the very simplistic models, it is unclear if KNN will perform well or if it is even the right choice for this dataset.
+
+### Training and Evaluation
+
+Firstly, the KNN method will turn the labels in Classes into variables at a certain step during its fit. Therefore it is necessary to convert the labels in order to be compatible; "not fire" becomes "not.fire". We will opt to use the unstandardized data to maintain the original distances between entries.
+
+```{r}
+levels(uns_trainData$Classes) = make.names(levels(uns_trainData$Classes))
+```
+
+The caret package is used to fit the KNN model. As such a 10-fold cross validation approach is taken. Additionally, a parameter called tuneLength is specified. It is the number of different k values to try when fitting the model. This will allow us to first locate the optimal value of k, and secondly plot the Accuracy of the model at each step to determine a trend.
+
+We will begin by fitting the model for the subset of all predictors.
+
+```{r}
+#set the seed
+set.seed(123)
+
+#fit the model
+knn.fit = train(Classes ~ ., data = uns_trainData, method="knn", tuneLength = 50, trControl = trainControl(method="cv", classProbs = TRUE))
+
+#output key information from the fit
+head(knn.fit$results)
+```
+
+```{r}
+knn.fit$bestTune
+```
+
+The optimal values of k was determined to be 27. This is relatively high and enforces the idea that inflexibility suits the dataset better. We can plot the results for all the values of k as follows.
+
+```{r}
+plot(knn.fit)
+```
+
+We see a general decrease in accuracy as N increase. We note however that the highest accuracy of 89.4% comes from the case where k = 27. Keeping in mind the size of the dataset, this implies that a more flexible KNN model was opted for. As k keeps increasing, accuracy falls drastically. However as it approaches 100, accuracy starts rising again. This may be explainable by the intricacies within the data itself. However, since when considering the datset in its entirety, we are working with high dimentionality, it becomes difficult to determine exactly what is happening.
+
+The ROC curve can be plotted. knn.fit automatically takes the value of k which generated the highest probability. So it is assumed that k = 27 when generating the following graph.
+
+```{r}
+#calculate probabilities
+knn.prob = predict(knn.fit,uns_testData,type="prob")
+
+#plot ROC curve
+roc_curve = suppressMessages(roc(uns_testData$Classes, knn.prob[,2]))
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+```
+
+The AUC of this model when applied to the entirety of the dataset is 0.919. This is currently the lowest recorded AUC for this subset. This positively reinforces the idea that the dataset is not really suited for highly nonlinear models.
+
+It would still be interesting to see if KNN could handle Wind Speed better than the previous models. The ROC curve is generated.
+
+```{r}
+#set the seed
+set.seed(123)
+
+#fit the model
+knn.fit = train(Classes ~ Ws, data = uns_trainData, method="knn", tuneLength = 50, trControl = trainControl(method="cv", classProbs = TRUE))
+
+#calculate probabilities
+knn.prob = predict(knn.fit,uns_testData,type="prob")
+
+#plot ROC curve
+roc_curve = suppressMessages(roc(uns_testData$Classes, knn.prob[,2]))
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+```
+
+The AUC for this ROC curve is actually lower than that of the one generated in QDA. This is an indication that KNN is simply too nonlinear to handle the data involved. While QDA may have improved the use of the predictor slightly, KNN was not able to discern an effective pattern.
+
+### Multiple ROC Curve
+
+```{r}
+#set the seed
+set.seed(123)
+
+#fit the models
+knn.fit1 = train(Classes ~ Temperature, data = uns_trainData, method="knn", tuneLength = 50, trControl = trainControl(method="cv", classProbs = TRUE))
+knn.fit2 = train(Classes ~ ., data = uns_trainData, method="knn", tuneLength = 50, trControl = trainControl(method="cv", classProbs = TRUE))
+knn.fit3 = train(Classes ~ RH + FFMC + DMC + FWI, data = uns_trainData, method="knn", tuneLength = 50, trControl = trainControl(method="cv", classProbs = TRUE))
+knn.fit4 = train(Classes ~ BUI + FFMC + DMC + DC, data = uns_trainData, method="knn", tuneLength = 50, trControl = trainControl(method="cv", classProbs = TRUE))
+knn.fit5 = train(Classes ~ ISI + FFMC, data = uns_trainData, method="knn", tuneLength = 50, trControl = trainControl(method="cv", classProbs = TRUE))
+
+#predict the values
+knn.prob1 = predict(knn.fit1,uns_testData,type="prob")
+knn.prob2 = predict(knn.fit2,uns_testData,type="prob")
+knn.prob3 = predict(knn.fit3,uns_testData,type="prob")
+knn.prob4 = predict(knn.fit4,uns_testData,type="prob")
+knn.prob5 = predict(knn.fit5,uns_testData,type="prob")
+
+#compute ROC curves
+roc1 = suppressMessages(roc(uns_testData$Classes, knn.prob1[,2]))
+roc2 = suppressMessages(roc(uns_testData$Classes, knn.prob2[,2]))
+roc3 = suppressMessages(roc(uns_testData$Classes, knn.prob3[,2]))
+roc4 = suppressMessages(roc(uns_testData$Classes, knn.prob4[,2]))
+roc5 = suppressMessages(roc(uns_testData$Classes, knn.prob5[,2]))
+
+#compute aucs
+auc1 = auc(roc1)
+auc2 = auc(roc2)
+auc3 = auc(roc3)
+auc4 = auc(roc4)
+auc5 = auc(roc5)
+
+#create a dataframe and store AUC to be used in comparison later
+auc1.data = data.frame(
+  Model = "KNN",
+  Temperature = auc1,
+  Entire_Dataset = auc2,
+  Best_Subset = auc3,
+  PCA = auc4,
+  RFE = auc5
+)
+
+auc.data = rbind(auc.data,auc1.data)
+
+#plot the first ROC curve
+plot.roc(roc1, col = "blue", main = "KNN ROC Curves")
+
+#add the rest of the curves as lines
+lines.roc(roc2, col = "red", print.auc = TRUE, print.auc.y = 0.4)
+
+lines.roc(roc3, col = "green", print.auc = TRUE, print.auc.y = 0.3)
+
+lines.roc(roc4, col = "orange", print.auc = TRUE, print.auc.y = 0.2)
+
+lines.roc(roc5, col = "yellow", print.auc = TRUE, print.auc.y = 0.1)
+
+legend_labels = c(
+  paste("Temperature (AUC =", round(auc1, 4), ")"),
+  paste("All Features (AUC =", round(auc2, 4), ")"),
+  paste("Best Subset (AUC =", round(auc3, 4), ")"),
+  paste("PCA (AUC =", round(auc4, 4), ")"),
+  paste("RFE (AUC =", round(auc5, 4), ")")
+)
+
+#legend
+legend("bottomright", legend = legend_labels, col = c("blue", "red", "green", "orange", "yellow"), lwd = 0.5, cex = 0.7)
+
+knn_plot = recordPlot()
+```
+
+We see an overall decrease in all the AUCs except for temperature. The dataset is definitely better off with less flexible approaches.
+
+### K Parameter Analysis
+
+The accuracy of each model for different values of k can be plotted and analyzed.
+
+```{r}
+#assign labels to each fit
+knn.fit1$results$Group <- "Temperature"
+knn.fit2$results$Group <- "All Features"
+knn.fit3$results$Group <- "Best Subset"
+knn.fit4$results$Group <- "PCA"
+knn.fit5$results$Group <- "RFE"
+
+#combine the results into a single data frame
+combined_results <- bind_rows(knn.fit1$results, knn.fit2$results, knn.fit3$results, knn.fit4$results, knn.fit5$results)
+
+#plot the fits
+K <- ggplot(combined_results, aes(x = k, y = Accuracy, colour = Group)) +
+      geom_line() +
+      scale_colour_manual(values = c("Temperature" = "blue", "All Features" = "red", "Best Subset" = "green", "PCA" = "orange", "RFE" = "yellow")) +
+      labs(title = "Accuracy for Different K Values", subtitle = "for the different KNN fits",colour = "Fit Group") +
+      theme_minimal()
+
+plot(K)
+```
+
+There is an overall decrease in accuracy as k increase. However, the peak value of k for each of these fits is relatively high when taking into consideration the total number of entries in the training set.
+
+## Tree Methods
+
+### Reverting Back to Unstandardized Data
+
+The logic behind this step is that tree models are especially good at being interpretable. With standardized data we lose this interpretation of the coefficients and split points of the tree. For this reason, the dataset will be taken in its unstandardized form.
+
+### Simple Classification Tree
+
+Using the rpart library, a simple classification tree can be generated. This will be done taking all the predictors into account at first.
+
+```{r}
+classifier = rpart(Classes~.,data = uns_trainData, method = "class")
+rpart.plot(classifier)
+```
+
+It seems that the algorithm has determined that the optimal tree depth is 1. The tree differentiates between the two classes based on FFMC only. If an entry has an FFMC greater than or equal to 80, it should be classified as a fire. Any less and the opposite should be predicted. We already know that FFMC is a strong predictor as it shows up in all three of the subsets generated by best subset selection, PCA and RFE. Based on this decision tree, FFMC is the most and only significant predictor.
+
+Just to make sure that we have our classifier running properly, we fit the model to a subset comprising of Temperature paired with BUI.
+
+```{r}
+classifier1 = rpart(Classes~Temperature + BUI,data = uns_trainData, method = "class")
+rpart.plot(classifier1)
+```
+
+This combination generates a more intricate plot. However, at this point, we are fairly confident that the two predictors chosen will not offer the best overall performance. Therefore, we stick to our original subsets and explain the simplistic phenomenon as a result of the separability of classes. We know from previous analysis and modelling that the data is highly linearly separable. Therefore a tree with a depth of 1 may have no trouble picking up on this distinction.
+
+```{r}
+#predicting the test set results
+y_pred = predict(classifier, 
+                 newdata = uns_testData, 
+                 type = 'class')
+
+#generate a confusion matrix
+table(uns_testY,y_pred)
+```
+
+Without needing to calculate, accuracy, precision and recall are all fairly high. However, the predictor is not perfect and still generates two false positives
+
+```{r}
+#predicting the test set to be outputted as probabilities rather than classes
+y_pred = predict(classifier, 
+                 newdata = uns_testData, 
+                 type = 'prob')
+
+#plotting the ROC curve
+roc_curve = suppressMessages(roc(uns_testY, y_pred[,2]))
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+ 
+
+```
+
+The AUC is relatively high reaffirming the accuracy of the simplistic decision tree.
+
+### Multiple ROC Curve
+
+```{r}
+#set the seed
+set.seed(123)
+
+#fit the models
+classifier1 = rpart(Classes~Temperature,data = uns_trainData, method = "class")
+classifier2 = rpart(Classes~.,data = uns_trainData, method = "class")
+classifier3 = rpart(Classes~FWI + DMC + RH + FFMC,data = uns_trainData, method = "class")
+classifier4 = rpart(Classes~BUI+DMC+FFMC+DC,data = uns_trainData, method = "class")
+classifier5 = rpart(Classes~ISI+FFMC,data = uns_trainData, method = "class")
+
+#predict the values
+y_pred1 = predict(classifier1, newdata = uns_testData, type = 'prob')
+y_pred2 = predict(classifier2, newdata = uns_testData, type = 'prob')
+y_pred3 = predict(classifier3, newdata = uns_testData, type = 'prob')
+y_pred4 = predict(classifier4, newdata = uns_testData, type = 'prob')
+y_pred5 = predict(classifier5, newdata = uns_testData, type = 'prob')
+
+#compute ROC curves
+roc1 = suppressMessages(roc(uns_testY, y_pred1[,2]))
+roc2 = suppressMessages(roc(uns_testY, y_pred2[,2]))
+roc3 = suppressMessages(roc(uns_testY, y_pred3[,2]))
+roc4 = suppressMessages(roc(uns_testY, y_pred4[,2]))
+roc5 = suppressMessages(roc(uns_testY, y_pred5[,2]))
+
+#compute aucs
+auc1 = auc(roc1)
+auc2 = auc(roc2)
+auc3 = auc(roc3)
+auc4 = auc(roc4)
+auc5 = auc(roc5)
+
+#create a dataframe and store AUC to be used in comparison later
+auc1.data = data.frame(
+  Model = "Decision Tree",
+  Temperature = auc1,
+  Entire_Dataset = auc2,
+  Best_Subset = auc3,
+  PCA = auc4,
+  RFE = auc5
+)
+
+auc.data = rbind(auc.data,auc1.data)
+
+#plot the first ROC curve
+plot.roc(roc1, col = "blue", main = "Decision Tree ROC Curves")
+
+#add the rest of the curves as lines
+lines.roc(roc2, col = "red", print.auc = TRUE, print.auc.y = 0.4)
+
+lines.roc(roc3, col = "green", print.auc = TRUE, print.auc.y = 0.3)
+
+lines.roc(roc4, col = "orange", print.auc = TRUE, print.auc.y = 0.2)
+
+lines.roc(roc5, col = "yellow", print.auc = TRUE, print.auc.y = 0.1)
+
+legend_labels = c(
+  paste("Temperature (AUC =", round(auc1, 4), ")"),
+  paste("All Features (AUC =", round(auc2, 4), ")"),
+  paste("Best Subset (AUC =", round(auc3, 4), ")"),
+  paste("PCA (AUC =", round(auc4, 4), ")"),
+  paste("RFE (AUC =", round(auc5, 4), ")")
+)
+
+#legend
+legend("bottomright", legend = legend_labels, col = c("blue", "red", "green", "orange", "yellow"), lwd = 0.5, cex = 0.7)
+
+tree_plot = recordPlot()
+```
+
+All the AUCs and ROC curves for the subsets excluding Temperature are the same. This implies that the decision trees for each of these fits are the same and the same classification was made based on FFMC. When FFMC is omitted, the model is forced to make a different assumption resulting in a lower AUC.
+
+### Pruning
+
+Obviously since the model has determined a tree of depth = 1 to be optimal, there is no need for pruning let alone room for it.
+
+### Bagging
+
+We begin by fitting the data. 50 bags will be chosen i.e 50 models will be trained. out-of-bag error is included meaning that excluded entries from each run are used to estimate the model's performance similar to cross validation. The minimum number of observations that must exist in a node for a split to be attempted is set to 2. Finally, cp is set to 0 meaning that the algorithm will attempt to grow the tree to its maximum size and then prune it.
+
+There is little need to tune these hyperparameters. This was done anyways in testing and showed that increasing the number of bags or playing with the complexity didn't change the output. This may be explained by the simplistic nature of the data and the lack of need for decision tree splits.
+
+```{r}
+set.seed(123) 
+  
+#fit the bagged model 
+bag = bagging( 
+  formula = Classes ~ ., 
+  data = uns_trainData, 
+  nbagg = 50,    
+  coob = TRUE, 
+  control = rpart.control(minsplit = 2, cp = 0,  
+                         min_depth=2) 
+)
+
+#predicting the test set results
+y_pred = predict(bag, uns_testX, type = 'class')
+
+#generate a confusion matrix
+table(uns_testY,y_pred$class)
+```
+
+We see there is no change in the output between the simple decision tree and the one implementing bagging. However, we must analyze some of the trees before making a definitive analysis.
+
+```{r}
+A = suppressWarnings(rpart.plot(bag$trees[[3]], cex = 0.8, box.palette = "auto"))
+```
+
+The decision tree shown above is generated from the third bag. In fact many of the bags generate this exact tree. This is the simple decision tree shown in the beginning of this section. However, some bags offer different results.
+
+```{r}
+suppressWarnings(rpart.plot(bag$trees[[5]], cex = 0.8, box.palette = "auto"))
+```
+
+The decision tree shown above is generated from the 5th bag. We note that now, 1 extra value is marked as "not fire" after making a split based on ISI. These two predictors are the exact predictors that were provided by RFE early on in the feature selection section.
+
+The ROC curve is generated as follows.
+
+```{r}
+#predicting the test set to be outputted as probabilities rather than classes
+y_pred = predict(bag, 
+                 uns_testX, 
+                 type = 'prob')
+#plotting the ROC curve
+roc_curve = suppressMessages(roc(uns_testY, y_pred$votes[,2]))
+plot(roc_curve, col = "blue", main = "ROC Curve", print.auc = TRUE)
+```
+
+The AUC has actually improved a little due to the presence of slightly more intricate trees.
+
+### Multiple ROC Curve
+
+```{r}
+#set the seed
+set.seed(123)
+
+#fit the models
+bag1 = bagging(formula = Classes ~ Temperature, data = trainData, nbagg = 50,    coob = TRUE, control = rpart.control(minsplit = 2, cp = 0, min_depth=2))
+bag2 = bagging(formula = Classes ~ ., data = trainData, nbagg = 50,    coob = TRUE, control = rpart.control(minsplit = 2, cp = 0, min_depth=2))
+bag3 = bagging(formula = Classes ~ FWI + DMC + RH + FFMC, data = trainData, nbagg = 50,    coob = TRUE, control = rpart.control(minsplit = 2, cp = 0, min_depth=2))
+bag4 = bagging(formula = Classes ~ BUI+DMC+FFMC+DC, data = trainData, nbagg = 50,    coob = TRUE, control = rpart.control(minsplit = 2, cp = 0, min_depth=2))
+bag5 = bagging(formula = Classes ~ ISI+FFMC, data = trainData, nbagg = 50,    coob = TRUE, control = rpart.control(minsplit = 2, cp = 0, min_depth=2))
+
+#predict the values
+y_pred1 = predict(bag1, testData, type = 'prob')
+y_pred2 = predict(bag2, testData, type = 'prob')
+y_pred3 = predict(bag3, testData, type = 'prob')
+y_pred4 = predict(bag4, testData, type = 'prob')
+y_pred5 = predict(bag5, testData, type = 'prob')
+
+#compute ROC curves
+roc1 = suppressMessages(roc(testY, y_pred1$votes[,2]))
+roc2 = suppressMessages(roc(testY, y_pred2$votes[,2]))
+roc3 = suppressMessages(roc(testY, y_pred3$votes[,2]))
+roc4 = suppressMessages(roc(testY, y_pred4$votes[,2]))
+roc5 = suppressMessages(roc(testY, y_pred5$votes[,2]))
+
+#compute aucs
+auc1 = auc(roc1)
+auc2 = auc(roc2)
+auc3 = auc(roc3)
+auc4 = auc(roc4)
+auc5 = auc(roc5)
+
+#create a dataframe and store AUC to be used in comparison later
+auc1.data = data.frame(
+  Model = "Bagged Decision Tree",
+  Temperature = auc1,
+  Entire_Dataset = auc2,
+  Best_Subset = auc3,
+  PCA = auc4,
+  RFE = auc5
+)
+
+auc.data = rbind(auc.data,auc1.data)
+
+#plot the first ROC curve
+plot.roc(roc1, col = "blue", main = "Bagged Decision Tree ROC Curves")
+
+#add the rest of the curves as lines
+lines.roc(roc2, col = "red", print.auc = TRUE, print.auc.y = 0.4)
+
+lines.roc(roc3, col = "green", print.auc = TRUE, print.auc.y = 0.3)
+
+lines.roc(roc4, col = "orange", print.auc = TRUE, print.auc.y = 0.2)
+
+lines.roc(roc5, col = "yellow", print.auc = TRUE, print.auc.y = 0.1)
+
+legend_labels = c(
+  paste("Temperature (AUC =", round(auc1, 4), ")"),
+  paste("All Features (AUC =", round(auc2, 4), ")"),
+  paste("Best Subset (AUC =", round(auc3, 4), ")"),
+  paste("PCA (AUC =", round(auc4, 4), ")"),
+  paste("RFE (AUC =", round(auc5, 4), ")")
+)
+
+#legend
+legend("bottomright", legend = legend_labels, col = c("blue", "red", "green", "orange", "yellow"), lwd = 0.5, cex = 0.7)
+
+bag_plot = recordPlot()
+```
+
+There is definitely more variability when considering each of the chosen subsets. This has resulted in an overall increase in AUC. We note that the AUC for the RFE subset is equal to 1. This makes sense as the best decision trees obtained were the ones that combined these two predictors in the decision making.
+
+### Random Forest
+
+In addition to choosing random assortments of entries, random assortments of predictors can be chosen as well. In fact this was already conducted in feature selection. RFE was paired with this method in order to determine the factors that carried the most weight within the dataset. Those two factors turned out to be ISI and FFMC. And seeing as that result is consistent with the results from Bagging, it is unlikely that there is much more improvement left for Random Forest to carry out. Regardless, the confusion matrix is generated as follows.
+
+```{r}
+forest = randomForest(Classes~., data = uns_trainData, ntree = 500) 
+y_pred = predict(forest,uns_testX) 
+table(uns_testY, y_pred)
+```
+
+We see the same confusion matrix as in the other decision tree methods. To avoid repetitive analysis, we jump straight to the multiple ROC curve
+
+### Multiple ROC Curve
+
+```{r}
+#set the seed
+set.seed(123)
+
+#fit the models
+forest1 = randomForest(Classes~Temperature, data = uns_trainData, ntree = 500)
+forest2 = randomForest(Classes~., data = uns_trainData, ntree = 500)
+forest3 = randomForest(Classes~RH+DMC+FFMC+FWI, data = uns_trainData, ntree = 500)
+forest4 = randomForest(Classes~BUI+FFMC+DMC+DC, data = uns_trainData, ntree = 500)
+forest5 = randomForest(Classes~ISI+FFMC, data = uns_trainData, ntree = 500)
+
+#predict the values
+y_pred1 = predict(forest1, newdata = uns_testData, type = 'prob')
+y_pred2 = predict(forest2, newdata = uns_testData, type = 'prob')
+y_pred3 = predict(forest3, newdata = uns_testData, type = 'prob')
+y_pred4 = predict(forest4, newdata = uns_testData, type = 'prob')
+y_pred5 = predict(forest5, newdata = uns_testData, type = 'prob')
+
+#compute ROC curves
+roc1 = suppressMessages(roc(uns_testY, y_pred1[,2]))
+roc2 = suppressMessages(roc(uns_testY, y_pred2[,2]))
+roc3 = suppressMessages(roc(uns_testY, y_pred3[,2]))
+roc4 = suppressMessages(roc(uns_testY, y_pred4[,2]))
+roc5 = suppressMessages(roc(uns_testY, y_pred5[,2]))
+
+#compute aucs
+auc1 = auc(roc1)
+auc2 = auc(roc2)
+auc3 = auc(roc3)
+auc4 = auc(roc4)
+auc5 = auc(roc5)
+
+#create a dataframe and store AUC to be used in comparison later
+auc1.data = data.frame(
+  Model = "Random Forest",
+  Temperature = auc1,
+  Entire_Dataset = auc2,
+  Best_Subset = auc3,
+  PCA = auc4,
+  RFE = auc5
+)
+
+auc.data = rbind(auc.data,auc1.data)
+
+#plot the first ROC curve
+plot.roc(roc1, col = "blue", main = "Random Forest ROC Curves")
+
+#add the rest of the curves as lines
+lines.roc(roc2, col = "red", print.auc = TRUE, print.auc.y = 0.4)
+
+lines.roc(roc3, col = "green", print.auc = TRUE, print.auc.y = 0.3)
+
+lines.roc(roc4, col = "orange", print.auc = TRUE, print.auc.y = 0.2)
+
+lines.roc(roc5, col = "yellow", print.auc = TRUE, print.auc.y = 0.1)
+
+legend_labels = c(
+  paste("Temperature (AUC =", round(auc1, 4), ")"),
+  paste("All Features (AUC =", round(auc2, 4), ")"),
+  paste("Best Subset (AUC =", round(auc3, 4), ")"),
+  paste("PCA (AUC =", round(auc4, 4), ")"),
+  paste("RFE (AUC =", round(auc5, 4), ")")
+)
+
+#legend
+legend("bottomright", legend = legend_labels, col = c("blue", "red", "green", "orange", "yellow"), lwd = 0.5, cex = 0.7)
+
+rf_plot = recordPlot()
+```
+
+There is a slight decrease in the AUC of the RFE fit. This makes sense as random forest was taking subsets of these two predictors rather than allowing them to completely coexist. However, all the AUCs are generally high.
+
+### Boosting
+
+The final method of creating decision trees is Boosting. Here, trees are developed sequentially with weight being added to elements that are missclassified each step. The parameter mfinal denotes the number of trees to make. 100 is chosen and should be sufficient for the size of the data at hand. (In private testing, increasing this parameter did not change the results). A cp of 0 is chosen allowing for trees to grow as deep as possible and a minsplit of 2 allows for groups to contain single elements.
+
+```{r}
+set.seed(123)
+
+model = boosting(Classes ~ ., data = uns_trainData, boos = TRUE, mfinal = 100, control = rpart.control(cp = 0, minsplit = 2))
+ 
+# Make predictions on the test set
+predictions = predict(model, uns_testX)
+ 
+# Calculate the confusion matrix
+table(uns_testY,predictions$class)
+```
+
+The confusion matrix is once again the same as in all the other cases.
+
+### Multiple ROC Curve
+
+```{r}
+#set the seed
+set.seed(123)
+
+#fit the models
+boost1 = boosting(Classes ~ Temperature, data = uns_trainData, boos = TRUE, mfinal = 100, control = rpart.control(cp = 0.01, minsplit = 2))
+boost2 = boosting(Classes ~ ., data = uns_trainData, boos = TRUE, mfinal = 100, control = rpart.control(cp = 0.01, minsplit = 2))
+boost3 = boosting(Classes ~ FWI + DMC + FFMC + RH, data = uns_trainData, boos = TRUE, mfinal = 100, control = rpart.control(cp = 0.01, minsplit = 2))
+boost4 = boosting(Classes ~ BUI + FFMC + DMC + DC, data = uns_trainData, boos = TRUE, mfinal = 100, control = rpart.control(cp = 0.01, minsplit = 2))
+boost5 = boosting(Classes ~ ISI + FFMC, data = uns_trainData, boos = TRUE, mfinal = 100, control = rpart.control(cp = 0.01, minsplit = 2))
+
+#predict the values
+y_pred1 = predict(boost1, newdata = uns_testData, type = 'prob')
+y_pred2 = predict(boost2, newdata = uns_testData, type = 'prob')
+y_pred3 = predict(boost3, newdata = uns_testData, type = 'prob')
+y_pred4 = predict(boost4, newdata = uns_testData, type = 'prob')
+y_pred5 = predict(boost5, newdata = uns_testData, type = 'prob')
+
+#compute ROC curves
+roc1 = suppressMessages(roc(uns_testY, y_pred1$prob[,2]))
+roc2 = suppressMessages(roc(uns_testY, y_pred2$prob[,2]))
+roc3 = suppressMessages(roc(uns_testY, y_pred3$prob[,2]))
+roc4 = suppressMessages(roc(uns_testY, y_pred4$prob[,2]))
+roc5 = suppressMessages(roc(uns_testY, y_pred5$prob[,2]))
+
+#compute aucs
+auc1 = auc(roc1)
+auc2 = auc(roc2)
+auc3 = auc(roc3)
+auc4 = auc(roc4)
+auc5 = auc(roc5)
+
+#create a dataframe and store AUC to be used in comparison later
+auc1.data = data.frame(
+  Model = "boosted decision tree",
+  Temperature = auc1,
+  Entire_Dataset = auc2,
+  Best_Subset = auc3,
+  PCA = auc4,
+  RFE = auc5
+)
+
+auc.data = rbind(auc.data,auc1.data)
+
+#plot the first ROC curve
+plot.roc(roc1, col = "blue", main = "Boosting Decision Tree ROC Curves")
+
+#add the rest of the curves as lines
+lines.roc(roc2, col = "red", print.auc = TRUE, print.auc.y = 0.4)
+
+lines.roc(roc3, col = "green", print.auc = TRUE, print.auc.y = 0.3)
+
+lines.roc(roc4, col = "orange", print.auc = TRUE, print.auc.y = 0.2)
+
+lines.roc(roc5, col = "yellow", print.auc = TRUE, print.auc.y = 0.1)
+
+legend_labels = c(
+  paste("Temperature (AUC =", round(auc1, 4), ")"),
+  paste("All Features (AUC =", round(auc2, 4), ")"),
+  paste("Best Subset (AUC =", round(auc3, 4), ")"),
+  paste("PCA (AUC =", round(auc4, 4), ")"),
+  paste("RFE (AUC =", round(auc5, 4), ")")
+)
+
+#legend
+legend("bottomright", legend = legend_labels, col = c("blue", "red", "green", "orange", "yellow"), lwd = 0.5, cex = 0.7)
+
+boost_plot = recordPlot()
+```
+
+Once again, results are very similar to the other decision tree algorithms. There is not much room left to improve and these methods have shown to fit the dataset really well on the whole.
+
+## Support Vector Machine (SVM)
+
+```{r}
+levels(trainData$Classes) = make.names(levels(trainData$Classes))
+```
+
+The final model to be discussed in the project is SVM. Using all of the information gathered about the dataset so far, a linear kernel should have no problem classifying the data. To illustrate this the hyperplane can be plotted for the SVM between ISI and FFMC.
+
+```{r}
+svmfit = svm(Classes ~ ISI + FFMC, data = trainData, kernel = "linear")
+
+plot(svmfit, cbind(trainData[5],trainData[8],trainData[11]))
+```
+
+We see that while the method may misclassify one or two data points, it does a very good job of separating the two classes.
+
+However, it would be unfair to completely write off other kernels. Additionally, there is also a need to determine the optimal hyperparameters.
+
+### Linear Kernel
+
+Without tuning, the linear kernel outputs the following confusion matrix.
+
+```{r}
+svmfit = svm(Classes ~ ., data = trainData, kernel = "linear", probability = TRUE)
+svm_pred = predict(svmfit,testX, probability = TRUE)
+table(svm_pred,testY)
+```
+
+There is an accuracy of roughly 96%. And while this alone is not enough to determine the true predictive power of this specific model, we are less interested in this than we are in the potential for better results after hyperparameter tuning.
+
+#### Hyperparameter Tuning
+
+For a linear Kernel, the primary hyperparameter is C. This is the parameter that controls the trade-off between low training error and low testing error. In order to tune it, a range from 0.1 to 100 is tested and the best cost is outputted.
+
+```{r}
+tune.fit = tune.svm(Classes ~ ., data = trainData, type = "C-classification", kernel = "linear", cost = 10^(-1:2))
+
+tune.fit$best.model
+```
+
+According to the above, the best value of C is 1. This is the default value used. With this knowledge the best achievable results with the linear kernel are the ones shown above.
+
+Without calculating metrics, the linear kernel has performed well and classifies with fair accuracy. To the determine the extent however, the multiple ROC curve is drawn.
+
+#### Multiple ROC Curve
+
+```{r}
+#set the seed
+set.seed(123)
+
+#fit the models
+svmfit1 = svm(Classes ~ Temperature, data = trainData, kernel = "linear", cost = 1, probability = TRUE)
+svmfit2 = svm(Classes ~ ., data = trainData, kernel = "linear", cost = 1, probability = TRUE)
+svmfit3 = svm(Classes ~ FWI + FFMC + DMC + RH, data = trainData, kernel = "linear", cost = 1, probability = TRUE)
+svmfit4 = svm(Classes ~ BUI + FFMC + DMC + DC, data = trainData, kernel = "linear", cost = 1, probability = TRUE)
+svmfit5 = svm(Classes ~ ISI + FFMC, data = trainData, kernel = "linear", cost = 1, probability = TRUE)
+
+#predict the values
+y_pred1 = predict(svmfit1, testX, type = "prob", probability = TRUE)
+y_pred2 = predict(svmfit2, testX, type = 'prob', probability = TRUE)
+y_pred3 = predict(svmfit3, testX, type = 'prob', probability = TRUE)
+y_pred4 = predict(svmfit4, testX, type = 'prob', probability = TRUE)
+y_pred5 = predict(svmfit5, testX, type = 'prob', probability = TRUE)
+
+#compute ROC curves
+roc1 = suppressMessages(roc(testY, attr(y_pred1, "probabilities")[,2]))
+roc2 = suppressMessages(roc(testY, attr(y_pred2, "probabilities")[,2]))
+roc3 = suppressMessages(roc(testY, attr(y_pred3, "probabilities")[,2]))
+roc4 = suppressMessages(roc(testY, attr(y_pred4, "probabilities")[,2]))
+roc5 = suppressMessages(roc(testY, attr(y_pred5, "probabilities")[,2]))
+
+#compute aucs
+auc1 = auc(roc1)
+auc2 = auc(roc2)
+auc3 = auc(roc3)
+auc4 = auc(roc4)
+auc5 = auc(roc5)
+
+#create a dataframe and store AUC to be used in comparison later
+auc1.data = data.frame(
+  Model = "SVM (Linear Kernel)",
+  Temperature = auc1,
+  Entire_Dataset = auc2,
+  Best_Subset = auc3,
+  PCA = auc4,
+  RFE = auc5
+)
+
+auc.data = rbind(auc.data,auc1.data)
+
+
+#plot the first ROC curve
+plot.roc(roc1, col = "blue", main = "SVM Linear Kernel ROC Curves")
+
+#add the rest of the curves as lines
+lines.roc(roc2, col = "red", print.auc = TRUE, print.auc.y = 0.4)
+
+lines.roc(roc3, col = "green", print.auc = TRUE, print.auc.y = 0.3)
+
+lines.roc(roc4, col = "orange", print.auc = TRUE, print.auc.y = 0.2)
+
+lines.roc(roc5, col = "yellow", print.auc = TRUE, print.auc.y = 0.1)
+
+legend_labels = c(
+  paste("Temperature (AUC =", round(auc1, 4), ")"),
+  paste("All Features (AUC =", round(auc2, 4), ")"),
+  paste("Best Subset (AUC =", round(auc3, 4), ")"),
+  paste("PCA (AUC =", round(auc4, 4), ")"),
+  paste("RFE (AUC =", round(auc5, 4), ")")
+)
+
+#legend
+legend("bottomright", legend = legend_labels, col = c("blue", "red", "green", "orange", "yellow"), lwd = 0.5, cex = 0.7)
+
+svm_lin = recordPlot()
+```
+
+The AUCs of each of the feature selected subsets are all almost equal to 1. As expected, the linear kernel does a good job of separating the classes.
+
+### Polynomial Kernel
+
+Without tuning, the polynomial kernel outputs the following confusion matrix
+
+```{r}
+svmfit = svm(Classes ~ ., data = trainData, kernel = "polynomial", degree = 2, probability = TRUE)
+svm_pred = predict(svmfit,testX)
+table(svm_pred,testY)
+```
+
+With an accuracy of 92%, this model is currently performing worse than the one with the linear kernel. In order to see if this can be changed, hyperparameters must be tuned.
+
+#### Hyperparameter Tuning
+
+In the case of a polynomial kernel, we are interested in a few more hyperparameters. In addition to C, we are now also curious about gamma. Gamma is a factor which basically controls the curvature of the decision boundary. We would also like to determine coef0, another value influencing the shape of the boundary. We do so in a similar way to the linear kernel approach. Gamma is given a choice between 0.1, 1 and 10 and the same applies for coef0.
+
+```{r}
+tune.fit = tune.svm(Classes ~ ., data = uns_trainData, type = "C-classification", kernel = "polynomial", degree = 2, cost = 10^(-1:2), gamma = c(0.1,1,10), coef0 = c(0.1,1,10))
+
+tune.fit$best.parameters$cost
+tune.fit$best.parameters$gamma
+tune.fit$best.parameters$coef0
+```
+
+For the polynomial kernel, a cost of 10, gamma of 0.1 and coef0 of 10 is preferred.
+
+```{r}
+svmfit = svm(Classes ~ ., data = trainData, kernel = "polynomial", gamma = 0.1, degree = 2, cost = 10, coef0 = 10, probability = TRUE)
+svm_pred = predict(svmfit,testX)
+table(svm_pred,testY)
+```
+
+Surprisingly, the polynomial kernel seems to have outperformed the linear kernel with an accuracy of 98.6%. The accuracy is not enough on its own, so the multiple ROC curve is shown.
+
+#### Multiple ROC Curve
+
+```{r}
+#set the seed
+set.seed(123)
+
+#fit the models
+svmfit1 = svm(Classes ~ Temperature, data = trainData, kernel = "polynomial", gamma = 0.1, degree = 2, cost = 10, coef0 = 10, probability = TRUE)
+svmfit2 = svm(Classes ~ ., data = trainData, kernel = "polynomial", gamma = 0.1, degree = 2, cost = 10, coef0 = 10, probability = TRUE)
+svmfit3 = svm(Classes ~ RH + FFMC + DMC + FWI, data = trainData, kernel = "polynomial", gamma = 0.1, degree = 2, cost = 10, coef0 = 10, probability = TRUE)
+svmfit4 = svm(Classes ~ BUI + FFMC + DMC + DC, data = trainData, kernel = "polynomial", gamma = 0.1, degree = 2, cost = 10, coef0 = 10, probability = TRUE)
+svmfit5 = svm(Classes ~ ISI + FFMC, data = trainData, kernel = "polynomial", gamma = 0.1, degree = 2, cost = 10, coef0 = 10, probability = TRUE)
+
+#predict the values
+y_pred1 = predict(svmfit1, testX, type = "prob", probability = TRUE)
+y_pred2 = predict(svmfit2, testX, type = 'prob', probability = TRUE)
+y_pred3 = predict(svmfit3, testX, type = 'prob', probability = TRUE)
+y_pred4 = predict(svmfit4, testX, type = 'prob', probability = TRUE)
+y_pred5 = predict(svmfit5, testX, type = 'prob', probability = TRUE)
+
+#compute ROC curves
+roc1 = suppressMessages(roc(testY, attr(y_pred1, "probabilities")[,2]))
+roc2 = suppressMessages(roc(testY, attr(y_pred2, "probabilities")[,2]))
+roc3 = suppressMessages(roc(testY, attr(y_pred3, "probabilities")[,2]))
+roc4 = suppressMessages(roc(testY, attr(y_pred4, "probabilities")[,2]))
+roc5 = suppressMessages(roc(testY, attr(y_pred5, "probabilities")[,2]))
+
+#compute aucs
+auc1 = auc(roc1)
+auc2 = auc(roc2)
+auc3 = auc(roc3)
+auc4 = auc(roc4)
+auc5 = auc(roc5)
+
+#create a dataframe and store AUC to be used in comparison later
+auc1.data = data.frame(
+  Model = "SVM (Quadratic Kernel)",
+  Temperature = auc1,
+  Entire_Dataset = auc2,
+  Best_Subset = auc3,
+  PCA = auc4,
+  RFE = auc5
+)
+
+auc.data = rbind(auc.data,auc1.data)
+
+#plot the first ROC curve
+plot.roc(roc1, col = "blue", main = "SVM Polynomial Kernel ROC Curves")
+
+#add the rest of the curves as lines
+lines.roc(roc2, col = "red")
+
+lines.roc(roc3, col = "green")
+
+lines.roc(roc4, col = "orange")
+
+lines.roc(roc5, col = "yellow")
+
+legend_labels = c(
+  paste("Temperature (AUC =", round(auc1, 4), ")"),
+  paste("All Features (AUC =", round(auc2, 4), ")"),
+  paste("Best Subset (AUC =", round(auc3, 4), ")"),
+  paste("PCA (AUC =", round(auc4, 4), ")"),
+  paste("RFE (AUC =", round(auc5, 4), ")")
+)
+
+#legend
+legend("bottomright", legend = legend_labels, col = c("blue", "red", "green", "orange", "yellow"), lwd = 0.5, cex = 0.7)
+
+svm_poly = recordPlot()
+```
+
+There is actually a slight improvement in AUC across the board using the polynomial kernel. This could be attributed to the fact that the hyperparameter tuning allowed for a slightly more optimal decision boundary to be produced allowing for a better depiction of the intricacies within the test set.
+
+# Results Interpretation
+
+The main metric used across all models to obtain a measure of performance was AUC. Confusion matrices were generated for each model but due to repetition and similarity, the computation of metrics such as accuracy, recall and precision were eventually omitted.
+
+The multiple ROC curves generated throughout this project are all displayed below.
+
+```{r results='hold'}
+plot_grid(lr_plot)
+plot_grid(lda_plot)
+plot_grid(qda_plot)
+plot_grid(knn_plot)
+plot_grid(tree_plot)
+plot_grid(bag_plot)
+plot_grid(rf_plot)
+plot_grid(boost_plot)
+plot_grid(svm_lin)
+plot_grid(svm_poly)
+```
+
+A few things are visually clear when comparing all of these figures together:
+
+-   The strongest subset was generally the one generated by RFE
+
+    This is due to the nature of the dataset being highly separable / linearly separable. Random Forest was used as the method of evaluation in RFE. Because Random Forest is ultimately a decision tree method, it was able to divide the dataset based on the predictors given in a way that separated the classes almost perfectly. Additionally, when studying ISI and FFMC together, it is made very clear how separable the two are. This made it easy for every model to pick up on the separability and hone in on it.
+
+-   The maximum AUC for each model is very high
+
+    This is likely due to the simplicity of the model. Once again the nature of the dataset is highly simplistic and so any of the given models should not have a hard time finding an optimal solution. Additionally, there are few data points which probably added to the simplicity. This is especially true when you take into account that all the values were gathered around summer in the span of three months. The set of values most likely present a local view of the true nature rather than a global one.
+
+-   The model that seems to have performed the worst is KNN
+
+    KNN is a nonlinear method. It can be highly flexible when k is small and less so when large. However, due to the size of the dataset, taking a value of k around 100 is already pushing it. As k approaches the number of elements in the dataset, the grouping becomes dependent on which class is larger. Additionally, the nature of the data was highly simplistic and did not call for such a flexible/nonlinear model.
+
+A dataframe containing all of these AUCs can be studied to get a further picture of these results.
+
+```{r}
+auc.data
+```
+
+-   In the case where Temperature was used as a lone predictor, KNN actually performed the best. It is possible that in this lone case, the flexibility of the method was able to pick up on certain intricacies. However, seeing as the AUC is not all that much greater than some of the other models', this can also likely be attributed to a fluke favoring the KNN algorithm.
+
+-   When considering the entire dataset, the two models which performed the best were Logistic Regression and SVM with a quadratic kernel. It is highly understandable why logistic regression might perform so well on this dataset, but potentially less so when considering quadratic SVM. One possible explanation is that the predictors exhibiting nonlinear characteristics were taken advantage of more in the latter model and therefore the high AUC was contrived in a different way.
+
+The AUCs of each model can be plotted in a bar graph as shown.
+
+```{r}
+auc.data[, -1] <- sapply(auc.data[, -1], as.numeric)
+
+df_long = pivot_longer(auc.data, cols = -Model, names_to = "Feature_Set", values_to = "AUC")
+
+ggplot(df_long, aes(x = Model, y = AUC, fill = Feature_Set)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme_minimal() +
+  labs(title = "Model AUC Across Different Feature Sets",
+       x = "Model",
+       y = "AUC") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_fill_brewer(palette = "Set3")
+```
+
+One last interesting point of analysis to be made here is by looking at the tree methods. It is clear that the simple Decision Tree performed worse than the ensemble methods. While the simple decision tree's AUCs are not bad at all, the others' are just ever so slightly better. The nature of the ensemble methods picked up on small factors which the simpler model was not able to do and therefore showcased better results.
+
+Otherwise, the only other thing that this plot shows is the fact that every model performed exceedingly well.
+
+# Conclusion
+
+Through this project, several machine learning models were used to predict forest fires. The performance of each of these models was measured and interpreted based on key metrics such as accuracy, AUC, and ROC curves. All of the methods used produced strong predictive results. This was due to many factors including the simplicity of the model, the linear separability, and limited data points. There was a slight trend that indicated that more flexible models tended to overfit the data more and thus perform slightly worse. But even KNN, being one of the most nonlinear models of the bunch, performed better than well. Aside from the models, this project also highlights the importance of feature selection, preprocessing, and model tuning in achieving high predictive accuracy and gaining a greater understanding of the data at hand. The results underscore the potential of machine learning in environmental risk prediction, and offer potential for similar critical studies in related fields.
